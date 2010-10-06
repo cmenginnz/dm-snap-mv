@@ -1,0 +1,165 @@
+Device-mapper snapshot multi-version
+====================================
+
+
+what is dm-snap-mv
+-------------------
+The dm-snap-mv is a target module for device-mapper, which can take
+multiple snapshots against an existing block device(origin device).
+
+All snapshots are saved in an independent block device(COW device).
+
+The copy-on-write is used, so only diff-data will be saved in the COW device.
+
+
+
+features
+--------
+1. snapshot of origin
+2. snapshot of snapshot
+3. instant snapshot creation and deletion
+4. origin and snapshots are concurrent readable/writable
+5. rollback snapshot to origin
+6. multiple origin devices share a COW device
+7. multiple COW devices are supported
+
+
+
+diagram
+-------
+
+           +---------------------+    +---------------+     +--------------+
+   read <--|                     |-----               |     |              |
+           |    origin dm_dev    |    |   origin_dev  | COW |              |
+  write ---|                     |---->               |----->  snapshot-1  |
+           +---------------------+    +--|------------+     |     ...      | 
+                                         |                  |     ...      |        
+           +---------------------+    +--|------------------+     ...      |
+   read <--|                     |-------?-                    snapshot-N  |
+           |  snapshot-X dm_dev  |    |         cow_dev                    |
+  write ---|                     |---->                                    |
+           +---------------------+    +------------------------------------+
+
+  dm_dev: device-mapper device, created by "dmsetup create ..."
+     COW: copy-on-write
+
+
+
+usage with dmsetup
+------------------
+
+dmsetup create  <dm_dev> --table <logical_start_sector> <num_sectors> dm-snap-mv <target_args>
+dmsetup message <dm_dev> <sector> <message-args>
+dmsetup status  <dm_dev>
+
+<dm_dev>
+    device-mapper device name
+
+<logical_start_sector>
+    0 is ok
+
+<num_sectors>
+    the size of <origin_dev> in sector
+
+<sector>
+    0 is ok
+
+<target-args>
+    co <origin_dev> <cow_dev> [-i <origin_id>] [-b [-F|-f [-c <chunk_size>]]]
+    cs <origin_dev> <cow_dev> <tag> [-i <origin_id>]
+
+<message-args>
+    so [-m <memo>]
+    ss <tag> [-m <memo>]
+    do
+    ds <tag>
+    rs <tag> [-b]
+
+For more info about dmsetup, refer to 'man 8 dmsetup'
+
+
+syntax in <target-args> and <message-args>:
+
+commands:
+    co               Create origin dm_dev
+    cs               Create snapshot dm_dev
+    so               take a snapshot of origin
+    ss               take a snapshot of snapshot
+    do               delete(unbind) origin device from COW device
+    ds               delete snapshot
+    rs               rollback snapshot to origin
+    
+positional arguments:
+    <origin_dev>     origin device
+    <cow_dev>        COW(copy-on-write) device
+    <tag>            snapshot tag
+
+options:
+    -i <origin_id>   the unique identity of origin deivce. 
+                     COW device uses it to distinguish origin devices.
+                     if not specified, the <origin_dev> is used as default value.
+
+    -b               bind origin device to COW device. 
+                     specify this option when origin device first used with COW device.
+
+    -f               format COW device.
+                     specify this option when COW device first used.
+
+    -F               force format COW device.
+
+    -c <chunk_size>  chunk size of COW device.
+                     the unit is 4KB-page
+
+    -m <memo>        memo
+
+    -b               rollback snapshot in background
+
+
+
+usage with dms
+--------------
+dms is a wrap of dmsetup written in python.
+
+dms c|create <dm_dev> <origin_dev> <cow_dev> [-b [-f|-F [-c <chunk_size>]]]
+      Create dm-device of origin
+      -b: Bind origin device to COW device
+      -f: Format COW device
+      -F: Force format COW device
+      -c: Specify the chunk size of COW device in 4KB-page
+
+dms c|create <dm_dev> <origin_dev> <cow_dev> <tag>
+      Create dm-device of snapshot-<tag>
+
+dms r|remove <dm_dev>
+      Remove dm-device
+
+dms s|snapshot <dm_dev> [-m <memo>]
+      Take a snapshot of origin
+
+dms s|snapshot <dm_dev> <tag> [-m <memo>]
+      Take a snapshot of snapshot-<tag>
+
+dms d|delete <dm_dev>
+      Delete(unbind) origin device from COW device, remove the dm-device
+      All snapshots should be deleted first
+
+dms d|delete <dm_dev> <tag>
+      Delete snapshot-<tag>
+
+dms b|rollback <dm_dev> <tag> [-b]
+      Rollback snapshot to origin
+
+dms l|list [<dm_dev>]
+      List all snapshots
+
+
+suggestion
+----------
+1. To get better performance, pick origin_dev and cow_dev from 
+   different physical harddisks and controllers.
+
+
+thanks
+------
+Inspired by the article "Versioned pointers: a new method of representing
+snapshots" from Daniel Phillips. (http://lwn.net/Articles/288896/)

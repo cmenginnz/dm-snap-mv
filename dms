@@ -1,0 +1,472 @@
+#!/usr/bin/python
+
+import os, re, time, getopt, sys, commands
+
+# data from kernel
+VTREE_TAG_USER = 0xFFFD
+# data from kernel end
+
+target_name = 'dm-snap-mv'
+
+dev_prefix = '/dev/'
+by_id_prefix = '/dev/disk/by-id/'
+
+cmd_echo = '/bin/echo'
+cmd_dmsetup = '/sbin/dmsetup'
+cmd_blockdev = '/sbin/blockdev'
+cmd_udevadm = '/sbin/udevadm'
+
+#
+# possible number of positional arguments of all cli command, 
+# and the corresponding dmsetup command
+#
+args_table = (
+	(('c', 'create'),   {4:'co', 5:'cs'}),
+	(('s', 'snapshot'), {2:'so', 3:'ss'}),
+	(('d', 'delete'),   {2:'do', 3:'ds'}),
+	(('b', 'rollback'), {3:'rs'}),
+	(('r', 'remove'),   {2:'remove'}),
+	(('l', 'list'),     {1:'list', 2:'list'}),
+)
+
+#
+# all possible combinations of options
+#
+opts_table = {
+	'co' : ['', 'b', 'bf', 'bF', 'bfc', 'bFc'],
+	'cs' : [''],
+	'so' : ['', 'm'],
+	'ss' : ['', 'm'],
+	'do' : [''],
+	'ds' : [''],
+	'rs' : ['', 'b'],
+	'list' : [''],
+	'remove' : [''],
+}
+
+
+def usage(code):
+	print '''
+USAGE: 
+  dms c|create <dm_dev> <origin_dev> <cow_dev> [-b [-f|-F [-c <chunk_size>]]]
+        Create dm-device of origin
+        -b: Bind origin device to COW device
+        -f: Format COW device
+        -F: Force format COW device
+        -c: Specify the chunk size of COW device in 4KB-page
+  
+  dms c|create <dm_dev> <origin_dev> <cow_dev> <tag>
+        Create dm-device of snapshot-<tag>
+  
+  dms r|remove <dm_dev>
+        Remove dm-device
+  
+  dms s|snapshot <dm_dev> [-m <memo>]
+        Take a snapshot of origin
+  
+  dms s|snapshot <dm_dev> <tag> [-m <memo>]
+        Take a snapshot of snapshot-<tag>
+  
+  dms d|delete <dm_dev>
+        Delete(unbind) origin device from COW device, remove the dm-device
+        All snapshots should be deleted first
+  
+  dms d|delete <dm_dev> <tag>
+        Delete snapshot-<tag>
+  
+  dms b|rollback <dm_dev> <tag> [-b]
+        Rollback snapshot to origin
+  
+  dms l|list [<dm_dev>]
+      List all snapshots
+'''
+	sys.exit(code)
+
+
+def error(msg = 'Invalid argumenst', code = 1):
+	print 'ERROR: ' + msg
+#	if msg == 'Invalid argumenst':
+#		usage(code)
+	sys.exit(code)
+
+
+#
+# get origin device size in sector
+#
+def get_dev_size(dev):
+	r = commands.getstatusoutput('%s --getsz %s' % (cmd_blockdev, dev))
+	if (r[0]):
+		error(r[1])
+	return r[1]
+
+
+#
+# add a prefix if @path is NOT a absolute path
+#
+def add_prefix(path):
+	return path if path.startswith('/') else (dev_prefix + path)
+
+
+def is_blank_col(buff, col):
+	for x in buff:
+		if (col >= len(x)) or (x[col] != ' '):
+			return False
+	return True
+
+
+def del_char(x, col):
+	if col >= len(x):
+		return x
+	if col == len(x) - 1:
+		return x[:col]
+	return x[:col] + x[col+1:]
+
+
+def del_blank_col(buff, col):
+	ret = []
+
+	for x in buff:
+		x = del_char(x, col)
+		ret.append(x)
+	return ret
+
+
+def clean_blank_col(buff):
+	col = 0
+	blank = 0
+
+	for i in range(len(buff[0])):
+		if is_blank_col(buff, col):
+			if blank < 3:
+				blank += 1
+			else:
+				buff = del_blank_col(buff, col)
+				col -= 1
+		else:
+			blank = 0
+		col += 1
+
+	return buff
+
+
+def add_header(buff):
+	str = '%-30s %-30s %-30s %-30s %-30s %s' % \
+		('YYYY/MM/DD HH:MM:SS', 'Tag', 'R', 'Chunks', 'DM_Dev', 'Memo')
+	buff.insert(0, str)
+
+
+def print_buff(buff):
+	sorted(buff)
+	add_header(buff)
+	buff = clean_blank_col(buff)
+	for x in buff:
+		print x
+
+
+#
+# return a dict of 'major:minor' : dm_dev pairs
+# used for translate major:minor to dm_dev
+#
+# 'dmsetup ls --target dm-snap-mv'
+# dmd_orig        (253, 0)
+# dmd_snap        (253, 1)
+#
+def get_mm_2_dm_dev():
+	# dmsetup ls --target dm-snap-mv
+	bash_cmd = '%s ls --target %s' % (cmd_dmsetup, target_name)
+	(rv, out) = run_dmsetup(bash_cmd)
+	if (rv):
+		error(out)
+
+	# [('dmd_orig', '253', '0'), ('dmd_snap', '253', '1')]
+	lst = re.findall('(\S+)\s+\((\d+)\s*,\s*(\d+)', out)
+
+	dct =  dict([('%s:%s' % (x[1], x[2]), x[0]) for x in lst])
+
+	# {'253:0':'dmd_orig', '253:1':'dmd_snap', '.':'.'}
+	dct['.'] = '.'
+
+	return dct
+
+
+#
+# get a version trees by 'dmsetup satuss'
+# {'sdb1-sdc1' : {'name': ['sdb1', '8:17', 'sdc1', '8:33'],
+#                 'chunk-size': 1,
+#                 'available-chunks': 1973841,
+#                 'total-chunks' : 2622611,
+#                 'vtree':{
+#                     0: {'tag':0, 'father':0, ...},
+#                     1: { ... }
+#                  }
+# }
+#
+def get_vtrees(dm_dev):
+	vtrees = {}
+	mm_2_dm_dev = get_mm_2_dm_dev()
+
+	if (not dm_dev):
+		dm_dev = ''
+	# dmsetup status --target dm-snap-mv
+	bash_cmd = '%s status %s --target %s' % (cmd_dmsetup, dm_dev, target_name)
+	(rv, out) = run_dmsetup(bash_cmd)
+	
+	# split 'dmsetup status' output dmd by dmd
+	out = out.split('\n\n')
+
+	#    x example:
+	#0:  dmd_orig: 0 2120517 dm-snap-mv
+	#1:  ## orig cow chunk-size available-chunks total-chunks cow-invalid used-versions total-versions clean-job, rollback-job	
+	#2:  #  sdb1 8:17 sdcc 8:33 1 1973841 2622611 0
+	#3:  ## version father-version tag birthday nr_excep dm_dev memo
+	#4:  #* . 0 0 0 1281411818 0 253:0 "ORIGIN"
+	#5:  #  R 2 0 2 1281411828 25627 . "memo-2"
+	for x in out:
+		lines = x.split('\n')
+
+		# ['#', 'sdb1', '8:17', 'sdc1', '8:33', '1', '1973841', 2622611', '0']
+		f = lines[2].split()
+
+		# 'sdb1-sdc1'
+		vtree_name = f[1] + '-' + f[3]
+
+		if vtrees.has_key(vtree_name):
+			continue
+
+		# ['sdb1', '8:17', 'sdc1', '8:33']
+		vtrees[vtree_name] = {
+			'name' : f[1 : 5],
+			'chunk-size' : int(f[5]),
+			'available-chunks' : int(f[6]),
+			'total-chunks' : int(f[7]),
+			'cow-invalid' : int(f[8]),
+			'used-versions': int(f[9]),
+			'total-versions': int(f[10]),
+			'clean-job': int(f[11]),
+			'rollback-job': int(f[12]),
+			'vtree': {}
+		}
+
+		# y ex:
+		# ''' #  R 2 0 2 1281411828 25627 . "memo-2" '''
+		for y in lines[4:]:
+			if not len(y):
+				continue
+			f = y.split()
+			z = {}
+			z['rollback'] = f[1]
+			z['father'] = int(f[3])
+			z['tag'] = int(f[4])
+			z['birthday'] = int(f[5])
+			z['nr_excep'] = int(f[6])
+			z['dm_dev'] = mm_2_dm_dev[f[7]]
+			z['memo'] = ' '.join(f[8:])
+			vtrees[vtree_name]['vtree'][int(f[2])] = z
+
+	return vtrees
+
+
+def do_print_vtree(buff, vtree):
+	for ver in vtree:	
+		version = vtree[ver]
+
+		if version['tag'] > VTREE_TAG_USER:
+			continue
+
+		bd = '%-30s' % time.strftime("%Y/%m/%d %H:%M:%S", time.localtime(version['birthday'])) 
+		rollback = '%-30s' % version['rollback']
+		dm_dev = '%-30s' % version['dm_dev']
+		excep = '%-30s' % version['nr_excep']
+		memo = version['memo']
+		tag = '%-30s' % str(version['tag'])
+
+		s = '%s %s %s %s %s %s' % (bd, tag, rollback, excep, dm_dev, memo)
+		buff.append(s)
+
+
+def print_vtree(vtree):
+	buff = []
+	name = vtree['name']
+	ac = vtree['available-chunks']
+	tc = vtree['total-chunks']
+	uv = vtree['used-versions']
+	tv = vtree['total-versions']
+
+	print '      origin-device : %s (%s)' % (name[0], name[1])
+	print '         cow-device : %s (%s)' % (name[2], name[3])
+	print '         chunk-size : %s page(s)' % (vtree['chunk-size'])
+	print '      used-versions : %d%% (%d/%d)' % (int(100.0 * uv / tv), uv, tv)
+	print '        used-chunks : %d%% (%d/%d)' % (int(100 - (100.0 * ac / tc)), tc - ac, tc)
+	print '         cow-status : %s' % ('invalid' if vtree['cow-invalid'] else 'valid')
+	print '           cleaning : %s' % ('yes' if vtree['clean-job'] else 'no')
+	print '        rollbacking : %s' % ('yes' if vtree['rollback-job'] else 'no')
+
+	do_print_vtree(buff, vtree['vtree'])
+
+	print_buff(buff)
+
+
+def list_vtrees(dm_dev):
+	vtrees = get_vtrees(dm_dev)
+
+	f = True
+	for n in vtrees:
+		if not f:
+			print
+		f = False
+		print_vtree(vtrees[n])
+
+
+#
+# run dmsetup command, exit if error
+#
+def run_dmsetup(bash_cmd):
+	errors = [ \
+		'Permission denied', \
+		'No devices found', \
+		'device-mapper driver missing from kernel' \
+	]
+
+	(rv, out) = commands.getstatusoutput(bash_cmd)
+	for x in errors:
+		if x in out:
+			error(x)
+
+	if (rv):
+		error(out)
+
+	return (rv, out)
+
+
+#
+# parse the positional arguments
+# return command string, dm_dev, arguments list for dmsetup, if ok
+# print error message, if failed
+#
+def parse_args(args):
+	le = len(args)
+	for cli_cmds, dm_cmds in args_table:
+		if args[0] in cli_cmds: 
+			if dm_cmds.has_key(le):
+				return (dm_cmds[le], \
+					args[1] if len(args) > 1 else [], \
+					args[2:] if len(args) > 2 else [] \
+				)
+			error("Invalid number of positional arguments")
+	error("Invalid command: %s" % args[0])
+	
+
+#
+# return options list for dmsetup, if ok
+#
+def parse_opts(dm_cmd, opts):
+	# the set of inputed options
+	s1 = set([x[0][1] for x in opts])
+
+	# a list of sets, each set is a possible comination of options
+	s2 = [set(x) for x in opts_table[dm_cmd]]
+
+	if len(s1) != len(opts):
+		error("Duplicate options")
+
+	if s1 not in s2:
+		error("Invalid combination of options")
+
+	return [' '.join(x) for x in opts]
+
+
+#
+# return ex: (co', 'mc0', ('/dev/sda', '/dev/sdb'), ('-b', '-f', '-c 1'))
+#
+def parse_cli(cli_args):
+	try:
+		opts, args = getopt.gnu_getopt(cli_args, 'bfFc:m:')
+	except getopt.GetoptError, err:
+		error(str(err))
+
+	if (not args):
+		usage(0)
+
+	dm_cmd, dm_dev, dm_args = parse_args(args)
+	dm_opts = parse_opts(dm_cmd, opts)
+
+	return dm_cmd, dm_dev, dm_args, dm_opts
+
+
+#
+# try to find out an ID of @dev in /dev/disk/by-id
+# return '' if not found
+#
+def get_dev_id(dev):
+	ret_id = ''
+	dev = os.path.realpath(dev)
+	files = os.listdir(by_id_prefix)
+
+	for id in files:
+		realpath = os.path.realpath('%s/%s' % (by_id_prefix, id))
+		if (realpath == dev) and (ret_id < id):
+			ret_id = id
+
+	return ret_id
+
+
+def get_dev_id_opt(dev):
+	id = get_dev_id(dev)
+	if (id):
+		id = '-i ' + id
+	
+	return id
+
+	
+#
+# input ex:
+#   cmd: 'co'
+#   dm_dev: 'mc0', 
+#   args: ('/dev/sda', '/dev/sdb')
+#   opts: ('-b', '-f', '-c 1')
+#
+def compose_dmsetup_and_run((cmd, dm_dev, args, opts)):
+	# echo 0 1024000 dm-snap-mv co /dev/sda /dev/sdb    -i ... -b -f -c 1 | dmsetup create mc0
+	# echo 0 1024000 dm-snap-mv cs /dev/sda /dev/sdb 1  -i ...            | dmsetup create mc1
+	if cmd in ['co', 'cs']:
+		args[0] = add_prefix(args[0])
+		args[1] = add_prefix(args[1])
+		size = get_dev_size(args[0])
+		id = get_dev_id_opt(args[0])
+		bash_cmd = '%s 0 %s %s %s %s %s %s | %s create %s && %s settle' % \
+			(cmd_echo, size, target_name, cmd, ' '.join(args), id, ' '.join(opts),\
+			 cmd_dmsetup, dm_dev, cmd_udevadm)
+
+	# dmestup message mc0 0 -- so   -m memo
+	# dmestup message mc0 0 -- ss 1 -m memo
+	# dmsetup message mc0 0 -- do && dmsetup remove mc0
+	# dmsetup message mc0 0 -- ds 1
+	# dmsetup message mc0 0 -- rs 1
+	if cmd in ['so', 'ss', 'do', 'ds', 'rs']:
+		bash_cmd = '%s message %s 0 -- %s %s %s' % \
+			(cmd_dmsetup, dm_dev, cmd, ' '.join(args), ' '.join(opts))
+		if cmd == 'do':
+			bash_cmd += ' && %s remove %s && %s settle' % (cmd_dmsetup, dm_dev, cmd_udevadm)
+
+	# dmsetup remove mc0
+	if cmd == 'remove':
+		bash_cmd = '%s remove %s && %s settle' % (cmd_dmsetup, dm_dev, cmd_udevadm)
+
+	if cmd == 'list':
+		list_vtrees(dm_dev)
+		return
+
+	bash_cmd = bash_cmd.replace('  ', ' ')
+
+	(rv, out) = run_dmsetup(bash_cmd)
+	if (rv):
+		error(out)
+
+
+def main():
+	r = parse_cli(sys.argv[1:])
+	compose_dmsetup_and_run(r)
+
+
+if (__name__ == '__main__'):
+	main()
