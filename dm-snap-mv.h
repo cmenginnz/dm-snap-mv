@@ -232,7 +232,7 @@
 // no limit to this number acatually. we just do the test up to 64
 #define MAX_CHUNK_SIZE 64  // in page
 
-#define DM_MSG_PREFIX "snapshots-mv"
+#define DM_MSG_PREFIX "dm-snap-mv"
 
 #define DMS_MAX_NR_COWS 8
 

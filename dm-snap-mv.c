@@ -10,6 +10,7 @@
 
 #include "dm-snap-mv.h"
 
+#include <linux/version.h>
 #include <linux/slab.h>
 #include <linux/device-mapper.h>
 #include <linux/buffer_head.h>
@@ -485,21 +486,18 @@ typedef struct dms_job_list_s {
 } dms_job_list_t;
 
 
-
 void dms_cow_mark_invalid(dms_cow_t *cow);
 void dms_dbg_dump_elist_bh(dms_bh_t *elist_bh);
 int dms_elist_find_co(dms_bh_t *elist_bh, chunk_t chunk_dmd);
 
 
-
 struct kmem_cache *dms_list_kmem_cache;
-
 
 
 dms_list_t* dms_list_alloc(void *load)
 {
 	dms_list_t *dms_list;
-	dms_list = kmem_cache_alloc(dms_list_kmem_cache, GFP_KERNEL);
+	dms_list = kmem_cache_alloc(dms_list_kmem_cache, GFP_ATOMIC);
 	dms_list->load = load;
 	
 	return dms_list;
@@ -630,12 +628,17 @@ void dms_zero_page(struct page *page)
 	memset(page_address(page), 0, PAGE_SIZE);
 }
 
+
 int dms_get_device(struct dm_target *ti, char *dev_name, struct dm_dev **dd)
 {
 	int r;
 
+	#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 34)
+	r = dm_get_device(ti, dev_name, 0, ti->len, dm_table_get_mode(ti->table), dd);
+	#else
 	r = dm_get_device(ti, dev_name, dm_table_get_mode(ti->table), dd);
-	
+	#endif
+
 	if (r)
 		DMERR("get %s error", dev_name);
 	
@@ -716,6 +719,10 @@ char const* dms_dm_name(struct dm_target *ti)
 
 	md = dm_table_get_md(ti->table);
 	name = dm_device_name(md);
+	
+	#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 34)
+	dm_put(md);
+	#endif
 
 	return name;
 }
@@ -1766,10 +1773,6 @@ uint32 dms_chunk_copy_get_chunk_size(dms_orig_t *orig, dms_bdev_t *bdev, chunk_t
 {
 	uint64 shift = orig->cow->sector_shift;
 	uint64 bdev_size = dms_bdev_size_sect(bdev);
-
-if (chunk == (bdev_size >> shift))
-DMINFO("last chunk: %s chunk=%u size=%llu",
-dms_bdev_name(bdev), chunk, RIGHTBITS64(bdev_size, shift));
 
 	// last chunk?
 	if (chunk == (bdev_size >> shift))
@@ -5267,10 +5270,12 @@ void dms_dbg_dump_elist_bh(dms_bh_t *elist_bh)
 	cos = p-2;
 	vcs = p + 4096;
 
+/*
 	printk(
 		"dump_elist_cache: b_blocknr=%llu n=%hu nn=%hu p=%p\n", 
 		elist_bh->b_blocknr, n, *nn, p
 	);
+*/
 	
 	for (i=1; i<=n; i++) {
 		printk("%d#%d ", cos[i].chunk, cos[i].offset);
@@ -6358,6 +6363,9 @@ int dms_construct_pre(dms_parsed_args_t *pargs)
 		goto out;
 	}
 
+	r = set_blocksize(pargs->dd_cow->bdev, 4096);
+	if (r) goto out;
+	
 	// format cow device
 	if (pargs->format_cow || pargs->force_format_cow)
 		if ((r = dms_format_cow(pargs))) {
@@ -6699,10 +6707,7 @@ int  dms_merge(struct dm_target *ti, struct bvec_merge_data *bvm,
 	x = RIGHTBITS64(bvm->bi_sector, sector_shift);
 	y =  (chunk_size << 12) - (x << 9) - bvm->bi_size;
 
-	if (y<0)  {
-		DMINFO("bi_sector=%llu bi_size=%d bv_len=%d", bvm->bi_sector, bvm->bi_size, biovec->bv_len);
-		y=0;
-	}
+	if (y<0) y = 0;
 
 	return y;
 }
@@ -6767,8 +6772,7 @@ out:
 }
 
 
-int dms_end_io(struct dm_target *ti, struct bio *bio, int error,
-			    union map_info *map_context)
+int dms_end_io(struct dm_target *ti, struct bio *bio, int error, union map_info *map_context)
 {
 	dms_map_info_t *mi;
 
@@ -6781,18 +6785,18 @@ int dms_end_io(struct dm_target *ti, struct bio *bio, int error,
 }
 
 
-static struct target_type dms_target = 
+struct target_type dms_target = 
 {
 	.name    = "dm-snap-mv",
-	.version = {1, 0, 0},
+	.version = {1, 1, 0},
 	.module  = THIS_MODULE,
 	.map     = dms_map,
 	.message = dms_message,
-	.merge = dms_merge,
-	.status = dms_status,
+	.merge   = dms_merge,
+	.status  = dms_status,
 	.ctr     = dms_construct,
 	.dtr     = dms_destruct,
-	.end_io = dms_end_io
+	.end_io  = dms_end_io
 };
 
 
@@ -6808,7 +6812,7 @@ static int __init dms_mod_init(void)
 
 	dms_list_kmem_cache = kmem_cache_create("dms_list", sizeof(dms_list_t), 0, 0, 0);
 	return 0;
- }
+}
 
 
 static void __exit dms_mod_exit(void)
@@ -6816,7 +6820,7 @@ static void __exit dms_mod_exit(void)
 	kmem_cache_destroy(dms_list_kmem_cache);
 	
 	dm_unregister_target(&dms_target);
-  }
+}
 
 
 module_init(dms_mod_init);

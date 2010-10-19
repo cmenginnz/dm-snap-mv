@@ -153,6 +153,82 @@ dms l|list [<dm_dev>]
       List all snapshots
 
 
+
+Usage examples
+--------------
+origin device: sdb1     COW device: sdc1
+
+# Init COW device, bind origin device to it. Create orig dm_dev
+    # dms create orig sdb1 sdc1 -bF
+    # mount /dev/mapper/orig /mnt/orig
+    # touch /mnt/orig/this-is-orig
+    # ll /mnt/orig/
+    -rw-r--r-- 1 root root 0 2010-10-19 21:39 this-is-orig
+
+
+# Take a snapshot of origin. Create snap1 dm_dev
+    # dms snapshot orig -m snap1
+    # dms create snap1 sdb1 sdc1 1
+    # mount /dev/mapper/snap1 /mnt/snap1/
+    # touch /mnt/snap1/this-is-snap1
+    # ll /mnt/snap1/
+    -rw-r--r-- 1 root root 0 2010-10-19 21:39 this-is-orig
+    -rw-r--r-- 1 root root 0 2010-10-19 21:42 this-is-snap1
+
+
+# Take a snapshot of snap1. Create snap2 dm_dev
+    # dms snapshot orig 1 -m snap2
+    # dms create snap2 sdb1 sdc1 2
+    # mount /dev/mapper/snap2 /mnt/snap2/
+    # touch /mnt/snap2/this-is-snap2
+    # ll /mnt/snap2/
+    -rw-r--r-- 1 root root 0 2010-10-19 21:39 this-is-orig
+    -rw-r--r-- 1 root root 0 2010-10-19 21:42 this-is-snap1
+    -rw-r--r-- 1 root root 0 2010-10-19 21:43 this-is-snap2
+
+
+# List all snapshots
+    # dms list
+          origin-device : sdb1 (8:17)
+             cow-device : sdc1 (8:33)
+             chunk-size : 1 page(s)
+          used-versions : 0% (3/640)
+            used-chunks : 0% (946/7865817)
+             cow-status : valid
+               cleaning : no
+            rollbacking : no
+    YYYY/MM/DD HH:MM:SS   Tag   R   Chunks   DM_Dev   Memo
+    2010/10/19 21:38:37   0     .   0        orig     "ORIGIN"
+    2010/10/19 21:41:28   1     .   5        snap1    "snap1"
+    2010/10/19 21:42:57   2     .   5        snap2    "snap2"
+
+
+# Rollback snap2 to origin
+    # umount /mnt/orig
+    # dms remove orig
+    # dms rollback snap2 2
+    # dms create orig sdb1 sdc1
+    # mount /dev/mapper/orig /mnt/orig
+    # touch /mnt/orig/this-is-orig-after-rollback
+    # ll /mnt/orig
+    -rw-r--r-- 1 root root 0 2010-10-19 21:39 this-is-orig
+    -rw-r--r-- 1 root root 0 2010-10-19 22:04 this-is-orig-after-rollback
+    -rw-r--r-- 1 root root 0 2010-10-19 21:42 this-is-snap1
+    -rw-r--r-- 1 root root 0 2010-10-19 21:43 this-is-snap2
+
+
+# Stop dm-snap-mv. Take a look at origin device sdb2
+    # umount /mnt/orig /mnt/snap1 /mnt/snap2
+    # dmsetup remove_all
+    # mount /dev/sdb1 /mnt/
+    # ll /mnt/
+    -rw-r--r-- 1 root root 0 2010-10-19 21:39 this-is-orig
+    -rw-r--r-- 1 root root 0 2010-10-19 22:04 this-is-orig-after-rollback
+    -rw-r--r-- 1 root root 0 2010-10-19 21:42 this-is-snap1
+    -rw-r--r-- 1 root root 0 2010-10-19 21:43 this-is-snap2
+
+
+
 suggestion
 ----------
 1. To get better performance, pick origin_dev and cow_dev from 
@@ -163,3 +239,15 @@ thanks
 ------
 Inspired by the article "Versioned pointers: a new method of representing
 snapshots" from Daniel Phillips. (http://lwn.net/Articles/288896/)
+
+
+chage log
+---------
+2010-10-06  
+1. First verison 1.0 release
+
+2010-10-20
+1. Version 1.1
+2. remove the dependence on block-size-kernel.patch by set_blocksize(cow, 4096)
+3. backport for Fedora kernel 2.6.33
+4. fixed a memory alloc bug
