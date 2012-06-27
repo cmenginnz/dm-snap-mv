@@ -2,6 +2,7 @@
  * Copyright (C) 2010 NOVELL, Inc.
  *
  * Module Author: Cong Meng, NOVELL
+ * 20120627 Alain Spineux <alain.spineux> some fixes and improvement
  *
  * This file is released under the GPL.
  */
