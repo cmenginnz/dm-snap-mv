@@ -10,6 +10,7 @@
 
 #include "dm-snap-mv.h"
 
+#include <linux/module.h>
 #include <linux/version.h>
 #include <linux/slab.h>
 #include <linux/device-mapper.h>
@@ -5907,7 +5908,11 @@ static dms_orig_t* dms_orig_alloc(struct dm_dev *dd_orig, struct dm_dev *dd_cow,
 
 	if (IS_EXX(orig->slot_id)) goto bad2;
 
+#ifdef init_MUTEX
 	init_MUTEX(&orig->orig_lock);
+#else
+	sema_init(&orig->orig_lock, 1);
+#endif
 	INIT_LIST_HEAD(&orig->origs_ln);
 
 	dms_clean_info_init(&orig->clean_info);
