@@ -168,6 +168,7 @@ struct semaphore dms_global_list_lock = __SEMAPHORE_INITIALIZER(dms_global_list_
 
 typedef struct dms_list_s {
 	struct dms_list_s *next;
+	struct dms_list_s *last; // last node of the list, only head->last is accurate
 	void *load;
 } dms_list_t;
 
@@ -512,12 +513,25 @@ void dms_list_free(dms_list_t *dms_list)
 
 
 /*
- * head -> ...  =>   head -> node -> ...
+ * head -> ...  =>   head ->  ... -> node
  */
-void dms_list_add(void **head, dms_list_t *node)
+void dms_list_add(dms_list_t **head, dms_list_t *node)
 {
-	node->next = *head;
-	*head = node;
+	dms_list_t *p=*head;
+	node->next=NULL;
+	if (p==NULL)
+	{
+		// the list was empty
+		*head=node;
+		node->last=node;
+	}
+	else
+	{
+		// add at the end of the list
+		p->last->next=node;
+		p->last=node;
+		node->last=NULL;
+	}
 }
 
 
@@ -535,6 +549,7 @@ void* dms_list_fetch_load(dms_list_t **head)
 	if (*head) {
 		temp = *head;
 		*head = temp->next;
+		if (*head) (*head)->last=temp->last;
 		load = temp->load;
 		dms_list_free(temp);
 	}
@@ -546,8 +561,7 @@ void dms_list_add_load(dms_list_t **head, void* load)
 {
 	dms_list_t *node;
 	node = dms_list_alloc(load);
-	node->next = *head;
-	*head = node;
+	dms_list_add(head, node);
 }
 
 
