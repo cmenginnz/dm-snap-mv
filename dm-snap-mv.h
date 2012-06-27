@@ -119,7 +119,7 @@
  *  | index1 slot 7                     | 
  *  +-----------------------------------+
  *
- *  An index1 slot correspods to a orig device
+ *  An index1 slot corresponds to a orig device
  *
  *  An index1 slot is an array, of which each element is an index2 plot number
  */
@@ -229,7 +229,7 @@
 
 #define DEFAULT_CHUNK_SIZE 1  //in page, 4 bytes
 
-// no limit to this number acatually. we just do the test up to 64
+// no limit to this number actually. we just do the test up to 64
 #define MAX_CHUNK_SIZE 64  // in page
 
 #define DM_MSG_PREFIX "dm-snap-mv"

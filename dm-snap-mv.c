@@ -404,7 +404,7 @@ typedef struct
 {
 	dms_orig_t *orig;
 	int tag;
-	// ver should be inited in dms_dmd_alloc(), 
+	// ver should be initialized in dms_dmd_alloc(),
 	// might be updated in write_snap() and vtree_clean()
 	atomic_t ver;
 	char const *name;
@@ -438,7 +438,7 @@ typedef struct
 	chunk_t chunk_dmd;
 
 	// WO always sets 0 here
-	// WS & RS set the refered chunk number here for map_and_submit_bios()
+	// WS & RS set the referred chunk number here for map_and_submit_bios()
 	chunk_t  chunk_cow;
 
 	/*
@@ -6642,7 +6642,7 @@ void dms_dbg_group_hash_find(dms_dm_dev_t *dmd, int idx, uint32 chunk_dmd)
 	orig = dmd->orig;
 	sector_shift = orig->cow->sector_shift;
 
-	// a bio can not across 2 chunks
+	// a bio can not cross 2 chunks
 	BUG_ON(
 		RIGHTBITS64(bio->bi_sector, sector_shift) + bio_sectors(bio) > 
 		(orig->cow->misc.disk->chunk_size << 3)
