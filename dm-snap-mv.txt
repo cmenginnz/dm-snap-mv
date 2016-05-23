@@ -241,7 +241,7 @@ Inspired by the article "Versioned pointers: a new method of representing
 snapshots" from Daniel Phillips. (http://lwn.net/Articles/288896/)
 
 
-chage log
+change log
 ---------
 2010-10-06  
 1. First verison 1.0 release
@@ -251,3 +251,11 @@ chage log
 2. remove the dependence on block-size-kernel.patch by set_blocksize(cow, 4096)
 3. backport for Fedora kernel 2.6.33
 4. fixed a memory alloc bug
+
+2012-06-27  
+1. some fixes and improvement from alain.spineux@gmail.com
+2. fix dms script to handle empty "list" (when no origin and snapshots exist)
+3. fix some typos in comments
+4. add support for kernel 3.x
+5. big speed improvement for sequential write (LIFO -> FIFO)
+   

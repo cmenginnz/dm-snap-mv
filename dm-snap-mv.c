@@ -2,6 +2,7 @@
  * Copyright (C) 2010 NOVELL, Inc.
  *
  * Module Author: Cong Meng, NOVELL
+ * 20120627 Alain Spineux <alain.spineux> some fixes and improvement
  *
  * This file is released under the GPL.
  */
@@ -10,6 +11,7 @@
 
 #include "dm-snap-mv.h"
 
+#include <linux/module.h>
 #include <linux/version.h>
 #include <linux/slab.h>
 #include <linux/device-mapper.h>
@@ -167,6 +169,7 @@ struct semaphore dms_global_list_lock = __SEMAPHORE_INITIALIZER(dms_global_list_
 
 typedef struct dms_list_s {
 	struct dms_list_s *next;
+	struct dms_list_s *last; // last node of the list, only head->last is accurate
 	void *load;
 } dms_list_t;
 
@@ -404,7 +407,7 @@ typedef struct
 {
 	dms_orig_t *orig;
 	int tag;
-	// ver should be inited in dms_dmd_alloc(), 
+	// ver should be initialized in dms_dmd_alloc(),
 	// might be updated in write_snap() and vtree_clean()
 	atomic_t ver;
 	char const *name;
@@ -438,7 +441,7 @@ typedef struct
 	chunk_t chunk_dmd;
 
 	// WO always sets 0 here
-	// WS & RS set the refered chunk number here for map_and_submit_bios()
+	// WS & RS set the referred chunk number here for map_and_submit_bios()
 	chunk_t  chunk_cow;
 
 	/*
@@ -511,12 +514,25 @@ void dms_list_free(dms_list_t *dms_list)
 
 
 /*
- * head -> ...  =>   head -> node -> ...
+ * head -> ...  =>   head ->  ... -> node
  */
-void dms_list_add(void **head, dms_list_t *node)
+void dms_list_add(dms_list_t **head, dms_list_t *node)
 {
-	node->next = *head;
-	*head = node;
+	dms_list_t *p=*head;
+	node->next=NULL;
+	if (p==NULL)
+	{
+		// the list was empty
+		*head=node;
+		node->last=node;
+	}
+	else
+	{
+		// add at the end of the list
+		p->last->next=node;
+		p->last=node;
+		node->last=NULL;
+	}
 }
 
 
@@ -534,6 +550,7 @@ void* dms_list_fetch_load(dms_list_t **head)
 	if (*head) {
 		temp = *head;
 		*head = temp->next;
+		if (*head) (*head)->last=temp->last;
 		load = temp->load;
 		dms_list_free(temp);
 	}
@@ -545,8 +562,7 @@ void dms_list_add_load(dms_list_t **head, void* load)
 {
 	dms_list_t *node;
 	node = dms_list_alloc(load);
-	node->next = *head;
-	*head = node;
+	dms_list_add(head, node);
 }
 
 
@@ -5907,7 +5923,11 @@ static dms_orig_t* dms_orig_alloc(struct dm_dev *dd_orig, struct dm_dev *dd_cow,
 
 	if (IS_EXX(orig->slot_id)) goto bad2;
 
+#ifdef init_MUTEX
 	init_MUTEX(&orig->orig_lock);
+#else
+	sema_init(&orig->orig_lock, 1);
+#endif
 	INIT_LIST_HEAD(&orig->origs_ln);
 
 	dms_clean_info_init(&orig->clean_info);
@@ -6642,7 +6662,7 @@ void dms_dbg_group_hash_find(dms_dm_dev_t *dmd, int idx, uint32 chunk_dmd)
 	orig = dmd->orig;
 	sector_shift = orig->cow->sector_shift;
 
-	// a bio can not across 2 chunks
+	// a bio can not cross 2 chunks
 	BUG_ON(
 		RIGHTBITS64(bio->bi_sector, sector_shift) + bio_sectors(bio) > 
 		(orig->cow->misc.disk->chunk_size << 3)

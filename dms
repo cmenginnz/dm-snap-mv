@@ -190,7 +190,7 @@ def get_mm_2_dm_dev():
 
 
 #
-# get a version trees by 'dmsetup satuss'
+# get a version trees by 'dmsetup status'
 # {'sdb1-sdc1' : {'name': ['sdb1', '8:17', 'sdc1', '8:33'],
 #                 'chunk-size': 1,
 #                 'available-chunks': 1973841,
@@ -222,6 +222,8 @@ def get_vtrees(dm_dev):
 	#4:  #* . 0 0 0 1281411818 0 253:0 "ORIGIN"
 	#5:  #  R 2 0 2 1281411828 25627 . "memo-2"
 	for x in out:
+		if x=='':
+			continue
 		lines = x.split('\n')
 
 		# ['#', 'sdb1', '8:17', 'sdc1', '8:33', '1', '1973841', 2622611', '0']
